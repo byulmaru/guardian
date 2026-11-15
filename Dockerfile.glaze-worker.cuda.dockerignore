@@ -1,0 +1,6 @@
+**
+!pyproject.toml
+!glaze_worker/
+!glaze_worker/**
+__pycache__/
+*.pyc

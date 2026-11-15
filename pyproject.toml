@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools==75.6.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glaze-worker"
+version = "0.1.0"
+description = "Standalone Temporal Activity worker for Glaze image protection"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "torch==2.6.0",
+  "torchvision==0.21.0",
+  "diffusers==0.32.2",
+  "transformers==4.46.3",
+  "accelerate==1.1.1",
+  "lpips==0.1.4",
+  "Pillow==11.0.0",
+  "numpy==1.26.4",
+  "temporalio==1.35.0",
+  "boto3==1.43.124",
+]
+
+[project.optional-dependencies]
+test = ["pytest==8.3.5"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["glaze_worker*"]

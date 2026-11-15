@@ -1,0 +1,47 @@
+FROM python:3.12-slim
+
+ARG TARGETARCH
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HOME=/tmp \
+    GLAZE_DEVICE=cuda \
+    HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml ./
+COPY glaze_worker/ ./glaze_worker/
+
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      amd64) \
+        pytorch_index=cu124; \
+        torch_version=2.6.0+cu124; \
+        torchvision_version=0.21.0+cu124; \
+        cuda_version=12.4 ;; \
+      arm64) \
+        pytorch_index=cu126; \
+        torch_version=2.6.0+cu126; \
+        torchvision_version=0.21.0; \
+        cuda_version=12.6 ;; \
+      *) echo "Unsupported target architecture: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    printf 'torch==%s\ntorchvision==%s\n' "$torch_version" "$torchvision_version" > /tmp/cuda-constraints.txt; \
+    python -m pip install --no-cache-dir \
+      --index-url "https://download.pytorch.org/whl/$pytorch_index" \
+      --extra-index-url https://pypi.org/simple \
+      --constraint /tmp/cuda-constraints.txt \
+      .; \
+    python -c 'import sys, torch, torchvision; expected_torch, expected_torchvision, expected_cuda = sys.argv[1:]; assert torch.__version__ == expected_torch, torch.__version__; assert torchvision.__version__ == expected_torchvision, torchvision.__version__; assert torch.version.cuda == expected_cuda, torch.version.cuda; print(torch.__version__, torchvision.__version__, torch.version.cuda)' \
+      "$torch_version" "$torchvision_version" "$cuda_version"; \
+    rm /tmp/cuda-constraints.txt
+
+USER 10001:10001
+
+CMD ["python", "-m", "glaze_worker.worker"]

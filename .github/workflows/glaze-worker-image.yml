@@ -1,0 +1,212 @@
+name: Glaze worker CUDA image
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-pull-request:
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+            torch: 2.6.0+cu124
+            torchvision: 0.21.0+cu124
+            cuda: "12.4"
+            machine: x86_64
+          - architecture: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            torch: 2.6.0+cu126
+            torchvision: 0.21.0
+            cuda: "12.6"
+            machine: aarch64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build CUDA image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          file: ./Dockerfile.glaze-worker.cuda
+          platforms: ${{ matrix.platform }}
+          push: false
+          load: true
+          tags: glaze-worker:pr-${{ github.sha }}-${{ matrix.architecture }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=glaze-worker-cuda-${{ matrix.architecture }}
+          # Pull request cache writes are isolated to that PR's merge ref.
+          cache-to: type=gha,mode=max,scope=glaze-worker-cuda-${{ matrix.architecture }}
+
+      - name: Smoke test image without a GPU or network
+        env:
+          IMAGE: glaze-worker:pr-${{ github.sha }}-${{ matrix.architecture }}
+          EXPECTED_TORCH: ${{ matrix.torch }}
+          EXPECTED_TORCHVISION: ${{ matrix.torchvision }}
+          EXPECTED_CUDA: ${{ matrix.cuda }}
+          EXPECTED_MACHINE: ${{ matrix.machine }}
+        run: |
+          docker run --rm --network none \
+            -e EXPECTED_MACHINE -e EXPECTED_TORCH -e EXPECTED_TORCHVISION -e EXPECTED_CUDA \
+            --entrypoint python "$IMAGE" -c '
+          import os
+          import platform
+          import boto3
+          import lpips
+          import temporalio
+          import torch
+          import torchvision
+          import glaze_worker.worker
+          from PIL import features
+          from glaze_worker.inference import ProtectionSettings
+
+          assert platform.machine() == os.environ["EXPECTED_MACHINE"], platform.machine()
+          assert torch.__version__ == os.environ["EXPECTED_TORCH"], torch.__version__
+          assert torchvision.__version__ == os.environ["EXPECTED_TORCHVISION"], torchvision.__version__
+          assert torch.version.cuda == os.environ["EXPECTED_CUDA"], torch.version.cuda
+          assert ProtectionSettings.from_dict({}) == ProtectionSettings()
+          assert features.check("webp"), "Pillow WebP support is unavailable"
+          assert os.geteuid() == 10001, os.geteuid()
+          print(f"machine={platform.machine()} torch={torch.__version__} torchvision={torchvision.__version__} cuda={torch.version.cuda} uid={os.geteuid()}")
+          '
+
+  publish-platform-images:
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - architecture: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+            torch: 2.6.0+cu124
+            torchvision: 0.21.0+cu124
+            cuda: "12.4"
+            machine: x86_64
+          - architecture: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            torch: 2.6.0+cu126
+            torchvision: 0.21.0
+            cuda: "12.6"
+            machine: aarch64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Compute image tags
+        id: image
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          ARCHITECTURE: ${{ matrix.architecture }}
+          LOCAL_TAG: glaze-worker:${{ github.sha }}-${{ matrix.architecture }}
+        run: |
+          image="ghcr.io/${REPOSITORY,,}/glaze-worker"
+          {
+            echo "architecture_tag=$image:$SHA-$ARCHITECTURE"
+            echo "local_tag=$LOCAL_TAG"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build architecture image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          file: ./Dockerfile.glaze-worker.cuda
+          platforms: ${{ matrix.platform }}
+          push: false
+          load: true
+          tags: ${{ steps.image.outputs.local_tag }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha,scope=glaze-worker-cuda-${{ matrix.architecture }}
+          cache-to: type=gha,mode=max,scope=glaze-worker-cuda-${{ matrix.architecture }}
+
+      - name: Smoke test image without a GPU or network
+        env:
+          IMAGE: ${{ steps.image.outputs.local_tag }}
+          EXPECTED_TORCH: ${{ matrix.torch }}
+          EXPECTED_TORCHVISION: ${{ matrix.torchvision }}
+          EXPECTED_CUDA: ${{ matrix.cuda }}
+          EXPECTED_MACHINE: ${{ matrix.machine }}
+        run: |
+          docker run --rm --network none \
+            -e EXPECTED_MACHINE -e EXPECTED_TORCH -e EXPECTED_TORCHVISION -e EXPECTED_CUDA \
+            --entrypoint python "$IMAGE" -c '
+          import os
+          import platform
+          import boto3
+          import lpips
+          import temporalio
+          import torch
+          import torchvision
+          import glaze_worker.worker
+          from PIL import features
+          from glaze_worker.inference import ProtectionSettings
+
+          assert platform.machine() == os.environ["EXPECTED_MACHINE"], platform.machine()
+          assert torch.__version__ == os.environ["EXPECTED_TORCH"], torch.__version__
+          assert torchvision.__version__ == os.environ["EXPECTED_TORCHVISION"], torchvision.__version__
+          assert torch.version.cuda == os.environ["EXPECTED_CUDA"], torch.version.cuda
+          assert ProtectionSettings.from_dict({}) == ProtectionSettings()
+          assert features.check("webp"), "Pillow WebP support is unavailable"
+          assert os.geteuid() == 10001, os.geteuid()
+          print(f"machine={platform.machine()} torch={torch.__version__} torchvision={torchvision.__version__} cuda={torch.version.cuda} uid={os.geteuid()}")
+          '
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push smoke-checked architecture image
+        env:
+          LOCAL_IMAGE: ${{ steps.image.outputs.local_tag }}
+          REGISTRY_IMAGE: ${{ steps.image.outputs.architecture_tag }}
+        run: |
+          docker tag "$LOCAL_IMAGE" "$REGISTRY_IMAGE"
+          docker push "$REGISTRY_IMAGE"
+
+  publish-multi-platform-tags:
+    needs: publish-platform-images
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@c99871dec2022cc055c062a10cc1a1310835ceb4 # v4.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish multi-platform SHA and latest tags
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          image="ghcr.io/${REPOSITORY,,}/glaze-worker"
+          docker buildx imagetools create \
+            --tag "$image:$SHA" \
+            --tag "$image:latest" \
+            "$image:$SHA-amd64" \
+            "$image:$SHA-arm64"
